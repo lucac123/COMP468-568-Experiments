@@ -1,5 +1,5 @@
 NVCC ?= nvcc
-ARCH ?= -arch=sm_89
+ARCH ?= -arch=sm_70
 CXX = g++
 CXXFLAGS ?= -O3 -std=c++17
 

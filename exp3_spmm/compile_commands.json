@@ -1,0 +1,16 @@
+[
+ {
+  "directory": "/home/lmc16/comp468/COMP468-568-Experiments/exp3_spmm",
+  "arguments": [
+   "nvcc",
+   "-arch=sm_89",
+   "-O3",
+   "-std=c++17",
+   "spmm_opt.cu",
+   "spmm_ref.cpp",
+   "-o",
+   "spmm_opt"
+  ],
+  "file": "spmm_ref.cpp"
+ }
+]
