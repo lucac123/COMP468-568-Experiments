@@ -1,0 +1,17 @@
+[
+ {
+  "directory": "/home/lmc16/comp468/COMP468-568-Experiments/exp2_mlp",
+  "arguments": [
+   "nvcc",
+   "-arch=sm_70",
+   "-O3",
+   "-std=c++17",
+   "-I./src",
+   "src/main.cu",
+   "-o",
+   "bin/dmlp",
+   "-lcublas",
+  ],
+  "file": "src/main.cu"
+ }
+]
