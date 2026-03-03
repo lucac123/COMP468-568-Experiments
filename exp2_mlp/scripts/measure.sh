@@ -16,7 +16,16 @@ for layers in "${LAYERS[@]}"; do
     for impl in "${IMPLS[@]}"; do
       echo "Running $impl layers=$layers batch=$batch"
       # TODO(student): parse stdout from the binary and append to the CSV.
-      "$BIN" --layers "$layers" --batch "$batch" --activation "$ACTIVATION" --impl "$impl" --no-verify
+      OUT="$("$BIN" --layers "$layers" --batch "$batch" --activation "$ACTIVATION" --impl "$impl" --no-verify)"
+      echo $OUT
+
+      TIME="$(echo $OUT | sed "s/.*Time(ms)=\([0-9.]\+\).*/\1/")"
+      GFLOP="$(echo $OUT | sed "s/.*GFLOP\/s=\([0-9.]\+\).*/\1/")"
+
+      echo "Parsed time(ms)=$TIME, GFLOP\/s=$GFLOP"
+
+      echo "$impl,$layers,$batch,$ACTIVATION,$TIME,$GFLOP" >> "$LOG"
+
     done
   done
 done

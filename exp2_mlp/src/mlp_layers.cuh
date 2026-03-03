@@ -3,8 +3,16 @@
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
 
+#include <cmath>
+#include <stdexcept>
 #include <string>
 #include <vector>
+
+void check_cublas(cublasStatus_t status, const char *msg) {
+  if (status != CUBLAS_STATUS_SUCCESS) {
+    throw std::runtime_error(std::string(msg) + " : cuBLAS error");
+  }
+}
 
 struct LayerShape {
   int batch;
@@ -26,26 +34,45 @@ inline double mlp_gflops(const std::vector<int> &layers, int batch,
   return total_flops / (millis * 1e6);
 }
 
+/**
+ * shape gives B = batch, M = in_dim, N = out_dim
+ *
+ * bias: N
+ * activations: B x N
+ */
 __global__ void bias_add_kernel(const float *__restrict__ bias,
                                 float *__restrict__ activations,
                                 LayerShape shape) {
-  /* TODO(student): each thread should add the bias for its neuron across the
+  /* DONE(student): each thread should add the bias for its neuron across the
    * batch. */
-  (void)bias;
-  (void)activations;
-  (void)shape;
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+  if (idx < shape.batch * shape.out_dim) {
+    activations[idx] += bias[idx % shape.out_dim];
+  }
 }
 
 __global__ void relu_kernel(float *__restrict__ activations, size_t elements) {
-  /* TODO(student): ReLU activation (set negative values to zero). */
-  (void)activations;
-  (void)elements;
+  /* DONE(student): ReLU activation (set negative values to zero). */
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+  if (idx < elements) {
+    activations[idx] = fmaxf(0.0f, activations[idx]);
+  }
 }
 
 __global__ void gelu_kernel(float *__restrict__ activations, size_t elements) {
-  /* TODO(student): Approximate GELU, e.g., 0.5*x*(1+tanh(...)). */
-  (void)activations;
-  (void)elements;
+  /* DONE(student): Approximate GELU, e.g., 0.5*x*(1+tanh(...)). */
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+  if (idx < elements) {
+    float x = activations[idx];
+
+    float param = sqrtf(2 / M_PI) * (x + 0.044715 * x * x * x);
+    float val = 0.5 * x * (1 + tanhf(param));
+
+    activations[idx] = val;
+  }
 }
 
 inline void launch_bias_add(const float *bias, float *activations,
@@ -75,12 +102,24 @@ __global__ void fused_bias_activation_kernel(const float *__restrict__ bias,
                                              float *__restrict__ activations,
                                              LayerShape shape,
                                              int activation_type) {
-  /* TODO(student): fuse bias add + activation.
+  /* DONE(student): fuse bias add + activation.
      activation_type: 0=ReLU, 1=GELU, extend as needed. */
-  (void)bias;
-  (void)activations;
-  (void)shape;
-  (void)activation_type;
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+  if (idx < shape.batch * shape.out_dim) {
+    activations[idx] += bias[idx % shape.out_dim];
+
+    if (activation_type == 0) {
+      activations[idx] = fmaxf(0.0f, activations[idx]);
+    } else {
+      float x = activations[idx];
+
+      float param = sqrtf(2 / M_PI) * (x + 0.044715 * x * x * x);
+      float val = 0.5 * x * (1 + tanhf(param));
+
+      activations[idx] = val;
+    }
+  }
 }
 
 inline void launch_fused_bias_activation(const float *bias,
@@ -97,15 +136,27 @@ inline void launch_fused_bias_activation(const float *bias,
   (void)elements;
 }
 
+/**
+ * shape gives B (batch_size), M (input dim), and N (output dim)
+ *
+ * All matrices are row-major
+ *
+ * input: B x M
+ * weight: N x M
+ * output: B x N
+ */
 inline void run_gemm_layer(const float *input, const float *weight,
                            float *output, const LayerShape &shape,
                            cublasHandle_t handle) {
-  /* TODO(student): call cublasSgemm (or StridedBatched) with the correct
+  /* DONE(student): call cublasSgemm (or StridedBatched) with the correct
      transpose options. Remember cuBLAS assumes column-major by default;
      consider using CUBLAS_OP_T to match row-major data. */
-  (void)input;
-  (void)weight;
-  (void)output;
-  (void)shape;
-  (void)handle;
+  const float alpha = 1.0f;
+  const float beta = 0.0f;
+  const int B = shape.batch;
+  const int M = shape.in_dim;
+  const int N = shape.out_dim;
+  check_cublas(cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, N, B, M, &alpha,
+                           weight, M, input, M, &beta, output, N),
+               "cublasSgemm");
 }

@@ -2,8 +2,8 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
-#include <chrono>
 #include <cassert>
+// #include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -76,12 +76,6 @@ void check_cuda(cudaError_t err, const char *msg) {
   if (err != cudaSuccess) {
     throw std::runtime_error(std::string(msg) + " : " +
                              cudaGetErrorString(err));
-  }
-}
-
-void check_cublas(cublasStatus_t status, const char *msg) {
-  if (status != CUBLAS_STATUS_SUCCESS) {
-    throw std::runtime_error(std::string(msg) + " : cuBLAS error");
   }
 }
 
@@ -197,14 +191,16 @@ void mlp_cpu_reference(const std::vector<int> &layers, int batch,
 }
 
 // small utility: max abs difference
-float_t max_abs_err(const std::vector<float_t>& A, const std::vector<float_t>& B){
-    assert(A.size()==B.size());
-    float_t mx = 0;
-    for (size_t i=0;i<A.size();++i){
-        float_t d = std::abs(A[i]-B[i]);
-        if (d>mx) mx=d;
-    }
-    return mx;
+float_t max_abs_err(const std::vector<float_t> &A,
+                    const std::vector<float_t> &B) {
+  assert(A.size() == B.size());
+  float_t mx = 0;
+  for (size_t i = 0; i < A.size(); ++i) {
+    float_t d = std::abs(A[i] - B[i]);
+    if (d > mx)
+      mx = d;
+  }
+  return mx;
 }
 
 int main(int argc, char **argv) {
@@ -288,11 +284,11 @@ int main(int argc, char **argv) {
     for (int layer = 0; layer < num_layers; ++layer) {
       LayerShape shape{batch, opt.layers[layer], opt.layers[layer + 1]};
       const float *d_w =
-          &(d_weights[weight_offsets[layer]]); // DONE(student): offset into d_weights
-                                         // based on layer
+          &(d_weights[weight_offsets[layer]]); // DONE(student): offset into
+                                               // d_weights based on layer
       const float *d_b =
-          &(d_biases[bias_offsets[layer]]); // DONE(student): offset into d_biases
-                                       // based on layer
+          &(d_biases[bias_offsets[layer]]); // DONE(student): offset into
+                                            // d_biases based on layer
       run_gemm_layer(d_workspace_a, d_w, d_workspace_b, shape, handle);
       launch_bias_add(d_b, d_workspace_b, shape, stream);
       launch_activation(opt.activation, d_workspace_b, shape, stream);
@@ -307,11 +303,11 @@ int main(int argc, char **argv) {
     for (int layer = 0; layer < num_layers; ++layer) {
       LayerShape shape{batch, opt.layers[layer], opt.layers[layer + 1]};
       const float *d_w =
-          &(d_weights[weight_offsets[layer]]); // DONE(student): offset into d_weights
-                                         // based on layer
+          &(d_weights[weight_offsets[layer]]); // DONE(student): offset into
+                                               // d_weights based on layer
       const float *d_b =
-          &(d_biases[bias_offsets[layer]]); // DONE(student): offset into d_biases
-                                       // based on layer
+          &(d_biases[bias_offsets[layer]]); // DONE(student): offset into
+                                            // d_biases based on layer
       run_gemm_layer(d_workspace_a, d_w, d_workspace_b, shape, handle);
       launch_fused_bias_activation(d_b, opt.activation, d_workspace_b, shape,
                                    stream);
@@ -337,7 +333,8 @@ int main(int argc, char **argv) {
 
     float max_diff = max_abs_err(h_output, h_ref);
 
-    std::cout << "Maximum error: " << std::fixed << std::setprecision(2) << max_diff << std::endl;
+    std::cout << "Maximum error: " << std::fixed << std::setprecision(5)
+              << max_diff << std::endl;
   }
 
   if (elapsed_ms > 0.0f) {
@@ -368,6 +365,6 @@ int main(int argc, char **argv) {
   check_cuda(cudaStreamDestroy(stream), "destory stream");
 
   check_cublas(cublasDestroy(handle), "cublasDestroy");
-  
+
   return 0;
 }
