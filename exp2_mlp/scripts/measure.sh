@@ -24,7 +24,9 @@ for layers in "${LAYERS[@]}"; do
 
       echo "Parsed time(ms)=$TIME, GFLOP\/s=$GFLOP"
 
-      echo "$impl,$layers,$batch,$ACTIVATION,$TIME,$GFLOP" >> "$LOG"
+      layers_clean="$(echo $layers | sed "s/,/_/g")"
+
+      echo "$impl,$layers_clean,$batch,$ACTIVATION,$TIME,$GFLOP" >> "$LOG"
 
     done
   done
