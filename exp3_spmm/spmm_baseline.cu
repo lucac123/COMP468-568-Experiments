@@ -23,7 +23,7 @@ using float_t = float;
 /*
 ===============================================================
  BASELINE KERNEL — one thread processes ONE ROW of A
- STUDENT TODO:
+ STUDENT DONE:
    - Fill missing loops
    - Compute C[row, j] += value * B[k, j]
 ===============================================================

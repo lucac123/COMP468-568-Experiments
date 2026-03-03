@@ -24,7 +24,7 @@ using float_t = float;
 =================================================================
  OPTIMIZED KERNEL (SKELETON)
  Warp processes ONE ROW, each thread handles j = lane, lane+32, ...
- STUDENT TODO:
+ STUDENT DONE:
     - Fetch row range
     - Loop over nonzeros
     - Load B[k,j] and accumulate
