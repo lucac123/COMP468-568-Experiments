@@ -1,5 +1,5 @@
 NVCC ?= nvcc
-ARCH ?= -arch=sm_80
+ARCH ?= -arch=sm_70
 CXXFLAGS ?= -O3 -std=c++17
 INCLUDES := -I./src
 LIBS := -lcublas
