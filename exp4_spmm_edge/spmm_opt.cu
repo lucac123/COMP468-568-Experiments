@@ -1,9 +1,46 @@
-
 // spmm_opt.cu — Two-Step GNN: SDDMM + SpMM Optimized (STUDENT SKELETON)
 #include <cassert>
 #include <cuda_runtime.h>
+#include <iomanip>
 #include <iostream>
 #include <vector>
+
+#define CUDA_CHECK(call)                                                       \
+  do {                                                                         \
+    cudaError_t err = (call);                                                  \
+    if (err != cudaSuccess) {                                                  \
+      std::cerr << "CUDA error: " << cudaGetErrorString(err) << " at "         \
+                << __FILE__ << ":" << __LINE__ << "\n";                        \
+      std::exit(1);                                                            \
+    }                                                                          \
+  } while (0)
+
+template <typename KernelLauncher>
+float time_kernel_ms(KernelLauncher launch, int warmup = 5, int iters = 50) {
+  for (int i = 0; i < warmup; ++i) {
+    launch();
+  }
+  CUDA_CHECK(cudaDeviceSynchronize());
+
+  cudaEvent_t start, stop;
+  CUDA_CHECK(cudaEventCreate(&start));
+  CUDA_CHECK(cudaEventCreate(&stop));
+
+  CUDA_CHECK(cudaEventRecord(start));
+  for (int i = 0; i < iters; ++i) {
+    launch();
+  }
+  CUDA_CHECK(cudaEventRecord(stop));
+  CUDA_CHECK(cudaEventSynchronize(stop));
+
+  float total_ms = 0.0f;
+  CUDA_CHECK(cudaEventElapsedTime(&total_ms, start, stop));
+
+  CUDA_CHECK(cudaEventDestroy(start));
+  CUDA_CHECK(cudaEventDestroy(stop));
+
+  return total_ms / iters;
+}
 
 using float_t = float;
 
@@ -49,11 +86,11 @@ sddmm_csr_warp_kernel(int M, int D, const int *__restrict__ d_row_ptr,
     return;
   int row = warp;
 
-  // TODO student: fetch start and end from d_row_ptr
+  // DONE student: fetch start and end from d_row_ptr
   int start = d_row_ptr[row];
   int end = d_row_ptr[row + 1];
 
-  // TODO student: for each nonzero p = start + lane, start + lane + 32, ...
+  // DONE student: for each nonzero p = start + lane, start + lane + 32, ...
   for (int p = start + lane; p < end; p += 32) {
 
     //   - read column j from d_col_idx[p]
@@ -91,23 +128,23 @@ __global__ void spmm_csr_warp_kernel(int M, int N,
     return;
   int row = warp;
 
-  // TODO student: fetch start, end
+  // DONE student: fetch start, end
   int start = d_row_ptr[row];
   int end = d_row_ptr[row + 1];
 
-  // TODO student: for j = lane; j < N; j += 32 ...
+  // DONE student: for j = lane; j < N; j += 32 ...
   for (int j = lane; j < N; j += 32) {
 
     float_t sum = 0.0f;
 
-    // TODO student: loop over nonzeros
+    // DONE student: loop over nonzeros
 
     for (int i = start; i < end; i++) {
       int k = d_col_idx[i];
       float_t v = d_vals[i];
       float_t b_val = d_B[k * N + j];
 
-      // TODO student: accumulate
+      // DONE student: accumulate
       sum += v * b_val;
     }
 
@@ -115,9 +152,12 @@ __global__ void spmm_csr_warp_kernel(int M, int N,
   }
 }
 
-int main() {
+int main(int argc, char **argv) {
   int M, K;
-  const int D = 64; // embedding dimension
+  int D = 64;
+  if (argc > 1)
+    D = std::atoi(argv[1]);
+
   std::vector<int> row_ptr, col_idx;
   std::vector<float> vals;
 
@@ -164,9 +204,15 @@ int main() {
             << "\n";
 
   // === Step 1: SDDMM on GPU ===
-  sddmm_csr_warp_kernel<<<grid, block>>>(M, D, d_row_ptr, d_col_idx, d_E,
-                                         d_vals);
-  cudaDeviceSynchronize();
+  float sddmm_ms = time_kernel_ms(
+      [&]() {
+        sddmm_csr_warp_kernel<<<grid, block>>>(M, D, d_row_ptr, d_col_idx, d_E,
+                                               d_vals);
+      },
+      5, 50);
+
+  CUDA_CHECK(cudaGetLastError());
+  CUDA_CHECK(cudaDeviceSynchronize());
 
   // Validate SDDMM
   std::vector<float> vals_gpu(nnz);
@@ -180,9 +226,15 @@ int main() {
     std::cout << "SDDMM FAILED\n";
 
   // === Step 2: SpMM on GPU (uses SDDMM output d_vals) ===
-  spmm_csr_warp_kernel<<<grid, block>>>(M, D, d_row_ptr, d_col_idx, d_vals, d_E,
-                                        d_C);
-  cudaDeviceSynchronize();
+  float spmm_ms = time_kernel_ms(
+      [&]() {
+        spmm_csr_warp_kernel<<<grid, block>>>(M, D, d_row_ptr, d_col_idx,
+                                              d_vals, d_E, d_C);
+      },
+      5, 50);
+
+  CUDA_CHECK(cudaGetLastError());
+  CUDA_CHECK(cudaDeviceSynchronize());
 
   // Validate SpMM
   std::vector<float> C_gpu((size_t)M * D);
@@ -194,6 +246,10 @@ int main() {
     std::cout << "SpMM  PASSED\n";
   else
     std::cout << "SpMM  FAILED\n";
+
+  std::cout << std::fixed << std::setprecision(4);
+  std::cout << "Optimized SDDMM avg time (ms): " << sddmm_ms << "\n";
+  std::cout << "Optimized SpMM  avg time (ms): " << spmm_ms << "\n";
 
   cudaFree(d_row_ptr);
   cudaFree(d_col_idx);

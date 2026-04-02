@@ -2,8 +2,46 @@
 // spmm_baseline.cu — Two-Step GNN: SDDMM + SpMM (STUDENT SKELETON)
 #include <cassert>
 #include <cuda_runtime.h>
+#include <iomanip>
 #include <iostream>
 #include <vector>
+
+#define CUDA_CHECK(call)                                                       \
+  do {                                                                         \
+    cudaError_t err = (call);                                                  \
+    if (err != cudaSuccess) {                                                  \
+      std::cerr << "CUDA error: " << cudaGetErrorString(err) << " at "         \
+                << __FILE__ << ":" << __LINE__ << "\n";                        \
+      std::exit(1);                                                            \
+    }                                                                          \
+  } while (0)
+
+template <typename KernelLauncher>
+float time_kernel_ms(KernelLauncher launch, int warmup = 5, int iters = 50) {
+  for (int i = 0; i < warmup; ++i) {
+    launch();
+  }
+  CUDA_CHECK(cudaDeviceSynchronize());
+
+  cudaEvent_t start, stop;
+  CUDA_CHECK(cudaEventCreate(&start));
+  CUDA_CHECK(cudaEventCreate(&stop));
+
+  CUDA_CHECK(cudaEventRecord(start));
+  for (int i = 0; i < iters; ++i) {
+    launch();
+  }
+  CUDA_CHECK(cudaEventRecord(stop));
+  CUDA_CHECK(cudaEventSynchronize(stop));
+
+  float total_ms = 0.0f;
+  CUDA_CHECK(cudaEventElapsedTime(&total_ms, start, stop));
+
+  CUDA_CHECK(cudaEventDestroy(start));
+  CUDA_CHECK(cudaEventDestroy(stop));
+
+  return total_ms / iters;
+}
 
 extern void load_csr_from_edgelist(const std::string &filename, int &M, int &K,
                                    std::vector<int> &row_ptr,
@@ -107,7 +145,9 @@ __global__ void spmm_csr_row_kernel(int M, int N,
 
 int main(int argc, char **argv) {
   int M, K;
-  const int D = 64; // embedding dimension
+  int D = 64;
+  if (argc > 1)
+    D = std::atoi(argv[1]);
 
   std::vector<int> row_ptr, col_idx;
   std::vector<float> vals;
@@ -159,13 +199,18 @@ int main(int argc, char **argv) {
              cudaMemcpyHostToDevice);
 
   // === Step 1: SDDMM on GPU ===
-  {
-    int block = 256;
-    int grid = (nnz + block - 1) / block;
-    sddmm_csr_baseline_kernel<<<grid, block>>>(nnz, D, d_row_indices, d_col_idx,
-                                               d_E, d_vals);
-    cudaDeviceSynchronize();
-  }
+  int sddmm_block = 256;
+  int sddmm_grid = (nnz + sddmm_block - 1) / sddmm_block;
+
+  float sddmm_ms = time_kernel_ms(
+      [&]() {
+        sddmm_csr_baseline_kernel<<<sddmm_grid, sddmm_block>>>(
+            nnz, D, d_row_indices, d_col_idx, d_E, d_vals);
+      },
+      5, 50);
+
+  CUDA_CHECK(cudaGetLastError());
+  CUDA_CHECK(cudaDeviceSynchronize());
 
   // Validate SDDMM
   std::vector<float> vals_gpu(nnz);
@@ -179,13 +224,18 @@ int main(int argc, char **argv) {
     std::cout << "SDDMM FAILED\n";
 
   // === Step 2: SpMM on GPU (uses SDDMM output d_vals) ===
-  {
-    int block = 256;
-    int grid = (M + block - 1) / block;
-    spmm_csr_row_kernel<<<grid, block>>>(M, D, d_row_ptr, d_col_idx, d_vals,
-                                         d_E, d_C);
-    cudaDeviceSynchronize();
-  }
+  int spmm_block = 256;
+  int spmm_grid = (M + spmm_block - 1) / spmm_block;
+
+  float spmm_ms = time_kernel_ms(
+      [&]() {
+        spmm_csr_row_kernel<<<spmm_grid, spmm_block>>>(
+            M, D, d_row_ptr, d_col_idx, d_vals, d_E, d_C);
+      },
+      5, 50);
+
+  CUDA_CHECK(cudaGetLastError());
+  CUDA_CHECK(cudaDeviceSynchronize());
 
   // Validate SpMM
   std::vector<float> C_gpu((size_t)M * D);
@@ -197,6 +247,10 @@ int main(int argc, char **argv) {
     std::cout << "SpMM  PASSED\n";
   else
     std::cout << "SpMM  FAILED\n";
+
+  std::cout << std::fixed << std::setprecision(4);
+  std::cout << "Baseline SDDMM avg time (ms): " << sddmm_ms << "\n";
+  std::cout << "Baseline SpMM  avg time (ms): " << spmm_ms << "\n";
 
   cudaFree(d_row_ptr);
   cudaFree(d_col_idx);
