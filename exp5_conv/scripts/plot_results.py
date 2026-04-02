@@ -2,31 +2,57 @@
 
 import csv
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 
 
-def load_results(csv_path):
-    rows = []
+def load_and_average_results(csv_dir):
+    csv_files = sorted(csv_dir.glob("*.csv"))
+    if not csv_files:
+        raise FileNotFoundError(f"No CSV files found in: {csv_dir}")
 
-    with open(csv_path, "r", newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            rows.append(
-                {
-                    "impl": row["impl"],
-                    "height": int(row["height"]),
-                    "width": int(row["width"]),
-                    "cin": int(row["cin"]),
-                    "cout": int(row["cout"]),
-                    "k": int(row["k"]),
-                    "stride": int(row["stride"]),
-                    "padding": int(row["padding"]),
-                    "time_ms": float(row["time_ms"]),
-                    "gflops": float(row["gflops"]),
-                }
-            )
+    grouped = defaultdict(lambda: {"time_ms_sum": 0.0, "gflops_sum": 0.0, "count": 0})
+
+    for csv_path in csv_files:
+        with open(csv_path, "r", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                key = (
+                    row["impl"],
+                    int(row["height"]),
+                    int(row["width"]),
+                    int(row["cin"]),
+                    int(row["cout"]),
+                    int(row["k"]),
+                    int(row["stride"]),
+                    int(row["padding"]),
+                )
+
+                grouped[key]["time_ms_sum"] += float(row["time_ms"])
+                grouped[key]["gflops_sum"] += float(row["gflops"])
+                grouped[key]["count"] += 1
+
+    rows = []
+    for key, values in grouped.items():
+        impl, height, width, cin, cout, k, stride, padding = key
+        count = values["count"]
+        rows.append(
+            {
+                "impl": impl,
+                "height": height,
+                "width": width,
+                "cin": cin,
+                "cout": cout,
+                "k": k,
+                "stride": stride,
+                "padding": padding,
+                "time_ms": values["time_ms_sum"] / count,
+                "gflops": values["gflops_sum"] / count,
+                "count": count,
+            }
+        )
 
     return rows
 
@@ -112,27 +138,82 @@ def make_speedup_plot(grouped, output_dir):
     plt.close()
 
 
+def write_averaged_csv(rows, output_dir):
+    out_csv = output_dir / "averaged_results.csv"
+    rows = sorted(
+        rows,
+        key=lambda r: (
+            r["cout"],
+            r["impl"],
+            r["height"],
+            r["width"],
+            r["cin"],
+            r["k"],
+            r["stride"],
+            r["padding"],
+        ),
+    )
+
+    with open(out_csv, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(
+            [
+                "impl",
+                "height",
+                "width",
+                "cin",
+                "cout",
+                "k",
+                "stride",
+                "padding",
+                "time_ms",
+                "gflops",
+                "samples_averaged",
+            ]
+        )
+        for r in rows:
+            writer.writerow(
+                [
+                    r["impl"],
+                    r["height"],
+                    r["width"],
+                    r["cin"],
+                    r["cout"],
+                    r["k"],
+                    r["stride"],
+                    r["padding"],
+                    r["time_ms"],
+                    r["gflops"],
+                    r["count"],
+                ]
+            )
+
+    return out_csv
+
+
 def main():
     if len(sys.argv) not in (2, 3):
-        print(f"Usage: {Path(sys.argv[0]).name} <results.csv> [output_dir]")
+        print(f"Usage: {Path(sys.argv[0]).name} <csv_folder> [output_dir]")
         sys.exit(1)
 
-    csv_path = Path(sys.argv[1])
+    csv_dir = Path(sys.argv[1])
     output_dir = Path(sys.argv[2]) if len(sys.argv) == 3 else Path("plots")
 
-    if not csv_path.exists():
-        print(f"Error: CSV file not found: {csv_path}")
+    if not csv_dir.exists() or not csv_dir.is_dir():
+        print(f"Error: CSV folder not found or is not a directory: {csv_dir}")
         sys.exit(1)
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    rows = load_results(csv_path)
+    rows = load_and_average_results(csv_dir)
     grouped = group_by_cout(rows)
 
+    averaged_csv = write_averaged_csv(rows, output_dir)
     make_runtime_plot(grouped, output_dir)
     make_gflops_plot(grouped, output_dir)
     make_speedup_plot(grouped, output_dir)
 
+    print(f"Averaged CSV written to: {averaged_csv}")
     print(f"Plots written to: {output_dir}")
 
 
