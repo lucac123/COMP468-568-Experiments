@@ -63,13 +63,6 @@ Options parse_args(int argc, char **argv) {
   return opt;
 }
 
-void check_cuda(cudaError_t err, const char *msg) {
-  if (err != cudaSuccess) {
-    throw std::runtime_error(std::string(msg) + " : " +
-                             cudaGetErrorString(err));
-  }
-}
-
 void seed_tensor(std::vector<float> &data, float scale) {
   for (size_t i = 0; i < data.size(); ++i) {
     data[i] = scale * std::sin(0.13f * static_cast<float>(i));
@@ -81,12 +74,36 @@ void conv2d_cpu_reference(const Conv2dShape &shape,
                           const std::vector<float> &weight,
                           std::vector<float> &output) {
   std::fill(output.begin(), output.end(), 0.0f);
-  /* TODO(student): implement the nested loops over Cout, Hout, Wout, Cin, and
+  /* DONE(student): implement the nested loops over Cout, Hout, Wout, Cin, and
      KxK. Use shape helpers (see conv_kernel.cuh) to translate indices and honor
      padding. */
-  (void)shape;
-  (void)input;
-  (void)weight;
+
+  for (int oc = 0; oc < shape.filters; oc++) {
+    for (int oh = 0; oh < shape.out_height; oh++) {
+      for (int ow = 0; ow < shape.out_width; ow++) {
+        float sum = 0.0f;
+
+        for (int ic = 0; ic < shape.channels; ic++) {
+          for (int kh = 0; kh < shape.kernel; kh++) {
+            for (int kw = 0; kw < shape.kernel; kw++) {
+              int in_h = oh * shape.stride + kh - shape.padding;
+              int in_w = ow * shape.stride + kw - shape.padding;
+
+              if (in_h >= 0 && in_h < shape.height && in_w >= 0 &&
+                  in_w < shape.width) {
+                int in_idx = input_index(shape, ic, in_h, in_w);
+                int wt_idx = weight_index(shape, oc, ic, kh, kw);
+                sum += input[in_idx] * weight[wt_idx];
+              }
+            }
+          }
+        }
+
+        int out_idx = output_index(shape, oc, oh, ow);
+        output[out_idx] = sum;
+      }
+    }
+  }
 }
 
 // small utility: max abs difference

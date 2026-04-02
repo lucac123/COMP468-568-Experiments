@@ -1,0 +1,7 @@
+[
+  {
+    "directory": "/home/lmc16/comp468/COMP468-568-Experiments/exp5_conv/",
+    "file": "src/main.cu",
+    "command": "clang++ --cuda-gpu-arch=sm_70 -std=c++17 -I./src -x cuda -c src/main.cu"
+  }
+]
