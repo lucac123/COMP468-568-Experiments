@@ -19,8 +19,17 @@ for h in "${SPATIAL[@]}"; do
     for impl in "${IMPLS[@]}"; do
       echo "Running $impl H=$h Cout=$cout"
       # TODO(student): parse stdout from the binary and append to the CSV.
-      "$BIN" --height "$h" --width "$h" --channels "$CIN" --filters "$cout" \
+      output=$(
+        "$BIN" --height "$h" --width "$h" --channels "$CIN" --filters "$cout" \
         --ksize "$K" --stride "$STRIDE" --padding "$PADDING" --impl "$impl" --no-verify
+      )
+
+      echo $output
+
+      time_ms=$(echo "$output" | awk -F'Time\\(ms\\)=' '{print $2}' | awk '{print $1}')
+      gflops=$(echo "$output" | awk -F'GFLOP/s=' '{print $2}')
+
+      echo "$impl,$h,$h,$CIN,$cout,$K,$STRIDE,$PADDING,$time_ms,$gflops" >> "$LOG"
     done
   done
 done
