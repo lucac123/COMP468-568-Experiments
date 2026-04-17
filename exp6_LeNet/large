@@ -1,0 +1,1 @@
+srun --pty --time=2:59:59 --gpus=1 --reservation=classroom --mem=64G $SHELL

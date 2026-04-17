@@ -1,0 +1,12 @@
+[
+  {
+    "directory": "/home/lmc16/comp468/COMP468-568-Experiments/exp6_LeNet",
+    "command": "nvcc -O3 -std=c++17 -I./src -x cu src/main.cu",
+    "file": "src/main.cu"
+  },
+  {
+    "directory": "/home/lmc16/comp468/COMP468-568-Experiments/exp6_LeNet",
+    "command": "nvcc -O3 -std=c++17 -I./src -x cu src/main.cu",
+    "file": "src/lenet_layers.cuh"
+  }
+]
