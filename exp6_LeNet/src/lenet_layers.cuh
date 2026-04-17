@@ -379,24 +379,16 @@ inline void run_lenet_conv_fused(cudnnHandle_t handle, const LenetShape &shape,
   cudnnTensorDescriptor_t b_desc =
       second_conv ? descs.conv2_bias_desc : descs.conv1_bias_desc;
 
-  // Fused conv + bias (with identity activation — tanh applied separately below
-  // because cudnnConvolutionBiasActivationForward only supports identity/ReLU).
-  cudnnActivationDescriptor_t identity_act;
-  cudnnCreateActivationDescriptor(&identity_act);
-  cudnnSetActivationDescriptor(identity_act, CUDNN_ACTIVATION_IDENTITY,
-                               CUDNN_PROPAGATE_NAN, 0.0);
-
+  // Single-kernel fused: y = tanh(alpha1 * conv(x, w) + alpha2 * z + bias)
+  // alpha2=0 means z is ignored; pass z = d_output as a valid but unused
+  // pointer.
   cudnnConvolutionBiasActivationForward(
       handle, &alpha1, x_desc, d_input, w_desc, d_filter, c_desc, algo,
-      d_workspace, workspace_bytes, &alpha2, y_desc, d_output, b_desc, d_bias,
-      identity_act, y_desc, d_output);
-
-  cudnnDestroyActivationDescriptor(identity_act);
-
-  // Apply tanh separately since the fused API can't do it
-  const float alpha = 1.0f, beta = 0.0f;
-  cudnnActivationForward(handle, descs.activation, &alpha, y_desc, d_output,
-                         &beta, y_desc, d_output);
+      d_workspace, workspace_bytes, &alpha2, y_desc,
+      d_output, // zDesc, z (ignored since alpha2=0)
+      b_desc, d_bias,
+      descs.activation, // existing tanh descriptor — reused
+      y_desc, d_output);
 }
 
 inline void run_lenet_pool(cudnnHandle_t handle, const LenetDescriptors &descs,
