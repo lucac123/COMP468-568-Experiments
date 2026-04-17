@@ -1,5 +1,6 @@
 #pragma once
 
+#include "cudnn_ops.h"
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
 #include <cudnn.h>
@@ -146,6 +147,10 @@ struct LenetDescriptors {
   cudnnTensorDescriptor_t fc2_desc = nullptr;
   cudnnTensorDescriptor_t fc3_desc = nullptr;
 
+  // Bias descriptors (1, C, 1, 1)
+  cudnnTensorDescriptor_t conv1_bias_desc = nullptr;
+  cudnnTensorDescriptor_t conv2_bias_desc = nullptr;
+
   cudnnFilterDescriptor_t conv1_filter = nullptr;
   cudnnFilterDescriptor_t conv2_filter = nullptr;
 
@@ -238,11 +243,36 @@ inline void create_lenet_descriptors(const LenetShape &shape,
                               CUDNN_PROPAGATE_NAN, 2, 2, // window_h, window_w
                               0, 0,                      // pad_h, pad_w
                               2, 2);                     // stride_h, stride_w
+
+  // --- Bias descriptors for cudnnAddTensor: (1, C, 1, 1) ---
+  cudnnCreateTensorDescriptor(&d.conv1_bias_desc);
+  cudnnSetTensor4dDescriptor(d.conv1_bias_desc, CUDNN_TENSOR_NCHW,
+                             CUDNN_DATA_FLOAT, 1, shape.conv1_out_channels, 1,
+                             1);
+
+  cudnnCreateTensorDescriptor(&d.conv2_bias_desc);
+  cudnnSetTensor4dDescriptor(d.conv2_bias_desc, CUDNN_TENSOR_NCHW,
+                             CUDNN_DATA_FLOAT, 1, shape.conv2_out_channels, 1,
+                             1);
 }
 
 inline void destroy_lenet_descriptors(LenetDescriptors &d) {
-  /* TODO(student): destroy all descriptors created above. */
-  (void)d;
+  cudnnDestroyTensorDescriptor(d.input_desc);
+  cudnnDestroyTensorDescriptor(d.conv1_out_desc);
+  cudnnDestroyTensorDescriptor(d.pool1_out_desc);
+  cudnnDestroyTensorDescriptor(d.conv2_out_desc);
+  cudnnDestroyTensorDescriptor(d.pool2_out_desc);
+  cudnnDestroyTensorDescriptor(d.fc1_desc);
+  cudnnDestroyTensorDescriptor(d.fc2_desc);
+  cudnnDestroyTensorDescriptor(d.fc3_desc);
+  cudnnDestroyFilterDescriptor(d.conv1_filter);
+  cudnnDestroyFilterDescriptor(d.conv2_filter);
+  cudnnDestroyConvolutionDescriptor(d.conv1_desc);
+  cudnnDestroyConvolutionDescriptor(d.conv2_desc);
+  cudnnDestroyActivationDescriptor(d.activation);
+  cudnnDestroyPoolingDescriptor(d.pool);
+  cudnnDestroyTensorDescriptor(d.conv1_bias_desc);
+  cudnnDestroyTensorDescriptor(d.conv2_bias_desc);
 }
 
 inline cudnnConvolutionFwdAlgo_t parse_algo(const std::string &name) {
@@ -261,45 +291,73 @@ inline size_t query_conv_workspace(cudnnHandle_t handle,
                                    const LenetDescriptors &descs,
                                    cudnnConvolutionFwdAlgo_t algo,
                                    bool second_conv) {
-  /* TODO(student): call cudnnGetConvolutionForwardWorkspaceSize for
+  /* DONE(student): call cudnnGetConvolutionForwardWorkspaceSize for
    * conv1/conv2. */
-  (void)handle;
+
   (void)shape;
-  (void)descs;
-  (void)algo;
-  (void)second_conv;
-  return 0;
+  size_t workspace_bytes = 0;
+  if (!second_conv) {
+    cudnnGetConvolutionForwardWorkspaceSize(
+        handle, descs.input_desc, descs.conv1_filter, descs.conv1_desc,
+        descs.conv1_out_desc, algo, &workspace_bytes);
+  } else {
+    cudnnGetConvolutionForwardWorkspaceSize(
+        handle, descs.pool1_out_desc, descs.conv2_filter, descs.conv2_desc,
+        descs.conv2_out_desc, algo, &workspace_bytes);
+  }
+  return workspace_bytes;
 }
 
 inline void run_lenet_conv(cudnnHandle_t handle, const LenetShape &shape,
                            const LenetDescriptors &descs, const float *d_input,
-                           const float *d_filter, float *d_output,
-                           void *d_workspace, size_t workspace_bytes,
-                           const std::string &algo_name, bool second_conv) {
-  /* TODO(student): select descriptors (conv1 vs conv2), pick algo, and call
+                           const float *d_filter, const float *d_bias,
+                           float *d_output, void *d_workspace,
+                           size_t workspace_bytes, const std::string &algo_name,
+                           bool second_conv) {
+  /* DONE(student): select descriptors (conv1 vs conv2), pick algo, and call
      cudnnConvolutionForward. After conv, optionally launch cudnnBiasAdd +
      cudnnActivationForward (tanh/ReLU). */
-  (void)handle;
+
   (void)shape;
-  (void)descs;
-  (void)d_input;
-  (void)d_filter;
-  (void)d_output;
-  (void)d_workspace;
-  (void)workspace_bytes;
-  (void)algo_name;
-  (void)second_conv;
+  const float alpha = 1.0f, beta = 0.0f, bias_alpha = 1.0f;
+  cudnnConvolutionFwdAlgo_t algo = parse_algo(algo_name);
+
+  cudnnTensorDescriptor_t x_desc =
+      second_conv ? descs.pool1_out_desc : descs.input_desc;
+  cudnnFilterDescriptor_t w_desc =
+      second_conv ? descs.conv2_filter : descs.conv1_filter;
+  cudnnConvolutionDescriptor_t c_desc =
+      second_conv ? descs.conv2_desc : descs.conv1_desc;
+  cudnnTensorDescriptor_t y_desc =
+      second_conv ? descs.conv2_out_desc : descs.conv1_out_desc;
+  cudnnTensorDescriptor_t b_desc =
+      second_conv ? descs.conv2_bias_desc : descs.conv1_bias_desc;
+
+  // Convolution
+  cudnnConvolutionForward(handle, &alpha, x_desc, d_input, w_desc, d_filter,
+                          c_desc, algo, d_workspace, workspace_bytes, &beta,
+                          y_desc, d_output);
+
+  // Bias add: broadcast (1, C, 1, 1) bias over (N, C, H, W) output
+  cudnnAddTensor(handle, &bias_alpha, b_desc, d_bias, &alpha, y_desc, d_output);
+
+  // Tanh activation in-place
+  cudnnActivationForward(handle, descs.activation, &alpha, y_desc, d_output,
+                         &beta, y_desc, d_output);
 }
 
 inline void run_lenet_pool(cudnnHandle_t handle, const LenetDescriptors &descs,
                            const float *d_input, float *d_output,
                            bool second_pool) {
-  /* TODO(student): use cudnnPoolingForward for pool1 or pool2. */
-  (void)handle;
-  (void)descs;
-  (void)d_input;
-  (void)d_output;
-  (void)second_pool;
+  /* DONE(student): use cudnnPoolingForward for pool1 or pool2. */
+  const float alpha = 1.0f, beta = 0.0f;
+  cudnnTensorDescriptor_t x_desc =
+      second_pool ? descs.conv2_out_desc : descs.conv1_out_desc;
+  cudnnTensorDescriptor_t y_desc =
+      second_pool ? descs.pool2_out_desc : descs.pool1_out_desc;
+
+  cudnnPoolingForward(handle, descs.pool, &alpha, x_desc, d_input, &beta,
+                      y_desc, d_output);
 }
 
 inline void run_fc_layer(cublasHandle_t handle, const LenetShape &shape,

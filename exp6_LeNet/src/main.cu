@@ -147,9 +147,6 @@ int main(int argc, char **argv) {
       "malloc d_weights");
   check_cuda(cudaMalloc(&d_biases, shape.total_bias_elements * sizeof(float)),
              "malloc d_biases");
-  // Workspace stays nullptr until step 4 — cudaFree(nullptr) is a no-op so
-  // cleanup is safe
-  (void)d_workspace;
 
   // Copy host data to device
   check_cuda(cudaMemcpy(d_input, h_input.data(),
@@ -171,9 +168,20 @@ int main(int argc, char **argv) {
   check_cublas(cublasCreate(&cublas), "cublasCreate");
 
   LenetDescriptors descs;
-  /* TODO(student): initialize tensor/filter/conv/pool descriptors using helpers
+  /* DONE(student): initialize tensor/filter/conv/pool descriptors using helpers
    * in lenet_layers.cuh. */
-  (void)descs;
+  create_lenet_descriptors(shape, descs);
+
+  // Workspace
+  // Query workspace size for both conv layers, take the max so one buffer
+  // covers both
+  cudnnConvolutionFwdAlgo_t algo_enum = parse_algo(opt.algo);
+  size_t ws1 = query_conv_workspace(cudnn, shape, descs, algo_enum, false);
+  size_t ws2 = query_conv_workspace(cudnn, shape, descs, algo_enum, true);
+  size_t ws_bytes = std::max(ws1, ws2);
+  if (ws_bytes > 0) {
+    check_cuda(cudaMalloc(&d_workspace, ws_bytes), "malloc d_workspace");
+  }
 
   cudaEvent_t start, stop;
   check_cuda(cudaEventCreate(&start), "create start");
@@ -182,15 +190,33 @@ int main(int argc, char **argv) {
   float elapsed_ms = 0.0f;
   if (opt.impl == "baseline") {
     check_cuda(cudaEventRecord(start), "record start baseline");
-    /* TODO(student):
+    /* DONE(student):
        1. run_lenet_conv for conv1/conv2 using opt.algo
        2. launch_lenet_pool for each pooling stage
        3. reshape tensor for FC input (either via dedicated kernel or by
        treating memory as-is)
        4. run_fc_layer (cuBLAS GEMM + bias + activation) for the dense blocks
     */
+
+    // Conv1 → pool1
+    run_lenet_conv(cudnn, shape, descs, d_input,
+                   d_weights + shape.weight_offsets[0],
+                   d_biases + shape.bias_offsets[0], d_conv1_out, d_workspace,
+                   ws_bytes, opt.algo, false);
+    run_lenet_pool(cudnn, descs, d_conv1_out, d_pool1_out, false);
+    // Conv2 → pool2
+    run_lenet_conv(cudnn, shape, descs, d_pool1_out,
+                   d_weights + shape.weight_offsets[1],
+                   d_biases + shape.bias_offsets[1], d_conv2_out, d_workspace,
+                   ws_bytes, opt.algo, true);
+    run_lenet_pool(cudnn, descs, d_conv2_out, d_pool2_out, true);
+
     check_cuda(cudaEventRecord(stop), "record stop baseline");
     check_cuda(cudaEventSynchronize(stop), "sync stop baseline");
+    // Temporary debug — remove after step 5
+    float tmp[4];
+    cudaMemcpy(tmp, d_pool2_out, 4 * sizeof(float), cudaMemcpyDeviceToHost);
+    printf("pool2_out[0..3]: %f %f %f %f\n", tmp[0], tmp[1], tmp[2], tmp[3]);
     check_cuda(cudaEventElapsedTime(&elapsed_ms, start, stop),
                "elapsed baseline");
   } else if (opt.impl == "fused") {
