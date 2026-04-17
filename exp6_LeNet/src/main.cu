@@ -83,17 +83,130 @@ void lenet_cpu_reference(const Options &opt, const LenetShape &shape,
                          const std::vector<size_t> &bias_offsets,
                          const std::vector<float> &input,
                          std::vector<float> &output) {
-  /* TODO(student): implement a simple CPU LeNet forward
+  /* DONE(student): implement a simple CPU LeNet forward
      (conv/pool/activations/GEMM). Keep it single-threaded for simplicity or
      call into a reference framework. */
   (void)opt;
-  (void)shape;
-  (void)weights;
-  (void)weight_offsets;
-  (void)biases;
-  (void)bias_offsets;
-  (void)input;
-  (void)output;
+  const int N = shape.batch;
+  const int IH = shape.in_height, IW = shape.in_width;
+  const int K1 = shape.conv1_kernel, C1 = shape.conv1_out_channels;
+  const int K2 = shape.conv2_kernel, C2 = shape.conv2_out_channels;
+  const int PS = shape.pool_stride;
+
+  const int c1h = IH - K1 + 1, c1w = IW - K1 + 1;   // 28x28
+  const int p1h = c1h / PS, p1w = c1w / PS;         // 14x14
+  const int c2h = p1h - K2 + 1, c2w = p1w - K2 + 1; // 10x10
+  const int p2h = c2h / PS, p2w = c2w / PS;         // 5x5
+  const int flat = C2 * p2h * p2w;                  // 400
+
+  std::vector<float> conv1(N * C1 * c1h * c1w);
+  std::vector<float> pool1(N * C1 * p1h * p1w);
+  std::vector<float> conv2(N * C2 * c2h * c2w);
+  std::vector<float> pool2(N * C2 * p2h * p2w);
+  std::vector<float> fc1(N * shape.fc1_out);
+  std::vector<float> fc2(N * shape.fc2_out);
+
+  // --- Conv1: (N,1,32,32) -> (N,6,28,28), bias, tanh ---
+  const float *w1 = weights.data() + weight_offsets[0];
+  const float *b1 = biases.data() + bias_offsets[0];
+  for (int n = 0; n < N; ++n)
+    for (int oc = 0; oc < C1; ++oc)
+      for (int oh = 0; oh < c1h; ++oh)
+        for (int ow = 0; ow < c1w; ++ow) {
+          float acc = b1[oc];
+          for (int ic = 0; ic < 1; ++ic)
+            for (int kh = 0; kh < K1; ++kh)
+              for (int kw = 0; kw < K1; ++kw) {
+                float x = input[n * IH * IW + (oh + kh) * IW + (ow + kw)];
+                float w = w1[oc * K1 * K1 + kh * K1 + kw];
+                acc += x * w;
+              }
+          conv1[n * C1 * c1h * c1w + oc * c1h * c1w + oh * c1w + ow] =
+              std::tanh(acc);
+        }
+
+  // --- Pool1: 2x2 avg, stride 2: (N,6,28,28) -> (N,6,14,14) ---
+  for (int n = 0; n < N; ++n)
+    for (int c = 0; c < C1; ++c)
+      for (int oh = 0; oh < p1h; ++oh)
+        for (int ow = 0; ow < p1w; ++ow) {
+          float acc = 0.f;
+          for (int kh = 0; kh < PS; ++kh)
+            for (int kw = 0; kw < PS; ++kw)
+              acc += conv1[n * C1 * c1h * c1w + c * c1h * c1w +
+                           (oh * PS + kh) * c1w + (ow * PS + kw)];
+          pool1[n * C1 * p1h * p1w + c * p1h * p1w + oh * p1w + ow] =
+              acc / (PS * PS);
+        }
+
+  // --- Conv2: (N,6,14,14) -> (N,16,10,10), bias, tanh ---
+  const float *w2 = weights.data() + weight_offsets[1];
+  const float *b2 = biases.data() + bias_offsets[1];
+  for (int n = 0; n < N; ++n)
+    for (int oc = 0; oc < C2; ++oc)
+      for (int oh = 0; oh < c2h; ++oh)
+        for (int ow = 0; ow < c2w; ++ow) {
+          float acc = b2[oc];
+          for (int ic = 0; ic < C1; ++ic)
+            for (int kh = 0; kh < K2; ++kh)
+              for (int kw = 0; kw < K2; ++kw) {
+                float x = pool1[n * C1 * p1h * p1w + ic * p1h * p1w +
+                                (oh + kh) * p1w + (ow + kw)];
+                float w = w2[oc * C1 * K2 * K2 + ic * K2 * K2 + kh * K2 + kw];
+                acc += x * w;
+              }
+          conv2[n * C2 * c2h * c2w + oc * c2h * c2w + oh * c2w + ow] =
+              std::tanh(acc);
+        }
+
+  // --- Pool2: 2x2 avg, stride 2: (N,16,10,10) -> (N,16,5,5) ---
+  for (int n = 0; n < N; ++n)
+    for (int c = 0; c < C2; ++c)
+      for (int oh = 0; oh < p2h; ++oh)
+        for (int ow = 0; ow < p2w; ++ow) {
+          float acc = 0.f;
+          for (int kh = 0; kh < PS; ++kh)
+            for (int kw = 0; kw < PS; ++kw)
+              acc += conv2[n * C2 * c2h * c2w + c * c2h * c2w +
+                           (oh * PS + kh) * c2w + (ow * PS + kw)];
+          pool2[n * C2 * p2h * p2w + c * p2h * p2w + oh * p2w + ow] =
+              acc / (PS * PS);
+        }
+
+  // --- FC1: (N,400) -> (N,120), bias, tanh ---
+  // weight layout: (out_f, in_f) row-major, same as GPU cublasSgemm expects
+  const float *wfc1 = weights.data() + weight_offsets[2];
+  const float *bfc1 = biases.data() + bias_offsets[2];
+  for (int n = 0; n < N; ++n)
+    for (int j = 0; j < shape.fc1_out; ++j) {
+      float acc = bfc1[j];
+      for (int k = 0; k < flat; ++k)
+        acc += pool2[n * flat + k] * wfc1[j * flat + k];
+      fc1[n * shape.fc1_out + j] = std::tanh(acc);
+    }
+
+  // --- FC2: (N,120) -> (N,84), bias, tanh ---
+  const float *wfc2 = weights.data() + weight_offsets[3];
+  const float *bfc2 = biases.data() + bias_offsets[3];
+  for (int n = 0; n < N; ++n)
+    for (int j = 0; j < shape.fc2_out; ++j) {
+      float acc = bfc2[j];
+      for (int k = 0; k < shape.fc1_out; ++k)
+        acc += fc1[n * shape.fc1_out + k] * wfc2[j * shape.fc1_out + k];
+      fc2[n * shape.fc2_out + j] = std::tanh(acc);
+    }
+
+  // --- FC3: (N,84) -> (N,10), bias, no activation ---
+  const float *wfc3 = weights.data() + weight_offsets[4];
+  const float *bfc3 = biases.data() + bias_offsets[4];
+  output.resize(N * shape.fc3_out);
+  for (int n = 0; n < N; ++n)
+    for (int j = 0; j < shape.fc3_out; ++j) {
+      float acc = bfc3[j];
+      for (int k = 0; k < shape.fc2_out; ++k)
+        acc += fc2[n * shape.fc2_out + k] * wfc3[j * shape.fc2_out + k];
+      output[n * shape.fc3_out + j] = acc;
+    }
 }
 
 int main(int argc, char **argv) {
@@ -210,13 +323,24 @@ int main(int argc, char **argv) {
                    d_biases + shape.bias_offsets[1], d_conv2_out, d_workspace,
                    ws_bytes, opt.algo, true);
     run_lenet_pool(cudnn, descs, d_conv2_out, d_pool2_out, true);
+    // Reshape pool2 output (N,16,5,5) -> (N,400) — no-op since same buffer
+    // layout
+    reshape_conv_to_fc(shape, d_pool2_out, d_pool2_out, 0);
+    // FC1: (N,400) -> (N,120) + tanh
+    run_fc_layer(cublas, shape, 0, d_pool2_out,
+                 d_weights + shape.weight_offsets[2],
+                 d_biases + shape.bias_offsets[2], d_fc1_out, 0);
+    // FC2: (N,120) -> (N,84) + tanh
+    run_fc_layer(cublas, shape, 1, d_fc1_out,
+                 d_weights + shape.weight_offsets[3],
+                 d_biases + shape.bias_offsets[3], d_fc2_out, 0);
+    // FC3: (N,84) -> (N,10), no activation
+    run_fc_layer(cublas, shape, 2, d_fc2_out,
+                 d_weights + shape.weight_offsets[4],
+                 d_biases + shape.bias_offsets[4], d_fc3_out, 0);
 
     check_cuda(cudaEventRecord(stop), "record stop baseline");
     check_cuda(cudaEventSynchronize(stop), "sync stop baseline");
-    // Temporary debug — remove after step 5
-    float tmp[4];
-    cudaMemcpy(tmp, d_pool2_out, 4 * sizeof(float), cudaMemcpyDeviceToHost);
-    printf("pool2_out[0..3]: %f %f %f %f\n", tmp[0], tmp[1], tmp[2], tmp[3]);
     check_cuda(cudaEventElapsedTime(&elapsed_ms, start, stop),
                "elapsed baseline");
   } else if (opt.impl == "fused") {
@@ -230,7 +354,11 @@ int main(int argc, char **argv) {
     throw std::invalid_argument("Unknown --impl=" + opt.impl);
   }
 
-  /* TODO(student): copy logits from device to h_output. */
+  /* DONE(student): copy logits from device to h_output. */
+  check_cuda(cudaMemcpy(h_output.data(), d_fc3_out,
+                        shape.output_elements * sizeof(float),
+                        cudaMemcpyDeviceToHost),
+             "memcpy d_fc3_out -> h_output");
 
   if (!opt.dump_path.empty()) {
     std::ofstream ofs(opt.dump_path, std::ios::binary);
@@ -245,8 +373,20 @@ int main(int argc, char **argv) {
   if (opt.verify) {
     lenet_cpu_reference(opt, shape, h_weights, shape.weight_offsets, h_biases,
                         shape.bias_offsets, h_input, h_ref);
-    /* TODO(student): compute and print max abs diff between h_output and h_ref.
+    /* DONE(student): compute and print max abs diff between h_output and h_ref.
      */
+
+    float max_diff = 0.f, mean_diff = 0.f;
+    for (size_t i = 0; i < h_output.size(); ++i) {
+      float d = std::abs(h_output[i] - h_ref[i]);
+      max_diff = std::max(max_diff, d);
+      mean_diff += d;
+    }
+    mean_diff /= static_cast<float>(h_output.size());
+    std::cout << std::fixed << std::setprecision(10)
+              << "Verify: max_abs_diff=" << max_diff
+              << " mean_abs_diff=" << mean_diff
+              << (max_diff < 1e-3f ? "  PASS" : "  FAIL") << std::endl;
   }
 
   if (elapsed_ms > 0.0f) {

@@ -360,30 +360,58 @@ inline void run_lenet_pool(cudnnHandle_t handle, const LenetDescriptors &descs,
                       y_desc, d_output);
 }
 
+__device__ inline float apply_activation(float x, bool use_tanh) {
+  return use_tanh ? tanhf(x) : x;
+}
+
+__global__ void fc_bias_act_kernel(float *output, const float *bias, int N,
+                                   int out_f, bool use_tanh) {
+  int j = blockIdx.x * blockDim.x + threadIdx.x; // feature index
+  int n = blockIdx.y;                            // batch index
+  if (j >= out_f || n >= N)
+    return;
+  float val = output[n * out_f + j] + bias[j];
+  output[n * out_f + j] = apply_activation(val, use_tanh);
+}
+
 inline void run_fc_layer(cublasHandle_t handle, const LenetShape &shape,
                          int layer_idx, const float *d_input,
                          const float *d_weight, const float *d_bias,
                          float *d_output, cudaStream_t stream) {
-  /* TODO(student): implement row-major GEMM via cublasSgemm / cublasGemmEx +
+  /* DONE(student): implement row-major GEMM via cublasSgemm / cublasGemmEx +
      bias add + activation. layer_idx ∈ {0:fc1,1:fc2,2:fc3}; use shape metadata
      to determine dims. */
-  (void)handle;
-  (void)shape;
-  (void)layer_idx;
-  (void)d_input;
-  (void)d_weight;
-  (void)d_bias;
-  (void)d_output;
-  (void)stream;
+
+  const int in_dims[3] = {shape.conv2_out_channels * 5 * 5, shape.fc1_out,
+                          shape.fc2_out};
+  const int out_dims[3] = {shape.fc1_out, shape.fc2_out, shape.fc3_out};
+  const int in_f = in_dims[layer_idx];
+  const int out_f = out_dims[layer_idx];
+  const int N = shape.batch;
+
+  cublasSetStream(handle, stream);
+  const float alpha = 1.0f, beta = 0.0f;
+  cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, out_f, N, in_f, &alpha,
+              d_weight, in_f, d_input, in_f, &beta, d_output, out_f);
+
+  // Bias add + activation (tanh for fc1/fc2, identity for fc3)
+  dim3 block(256);
+  dim3 grid((out_f + 255) / 256, N);
+  fc_bias_act_kernel<<<grid, block, 0, stream>>>(d_output, d_bias, N, out_f,
+                                                 layer_idx < 2);
 }
 
 inline void reshape_conv_to_fc(const LenetShape &shape, const float *d_input,
                                float *d_output, cudaStream_t stream) {
-  /* TODO(student): implement or call cudaMemcpy to treat tensor as flattened
+  /* DONE(student): implement or call cudaMemcpy to treat tensor as flattened
      (B, flattened). A simple kernel can copy/reshape pool2 output into
      row-major batches for GEMM. */
-  (void)shape;
-  (void)d_input;
-  (void)d_output;
-  (void)stream;
+
+  // pool2 output (N, 16, 5, 5) is contiguous and identical in memory to (N,
+  // 400). If input and output are the same buffer this is a no-op; otherwise
+  // copy.
+  if (d_input != d_output) {
+    cudaMemcpyAsync(d_output, d_input, shape.pool2_out_elems * sizeof(float),
+                    cudaMemcpyDeviceToDevice, stream);
+  }
 }
