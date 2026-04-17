@@ -4,6 +4,7 @@
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
 #include <cudnn.h>
+#include <stdexcept>
 
 #include <array>
 #include <string>
@@ -282,8 +283,18 @@ inline cudnnConvolutionFwdAlgo_t parse_algo(const std::string &name) {
     return CUDNN_CONVOLUTION_FWD_ALGO_IMPLICIT_PRECOMP_GEMM;
   if (name == "fft")
     return CUDNN_CONVOLUTION_FWD_ALGO_FFT;
-  // TODO(student): extend with more options.
-  return CUDNN_CONVOLUTION_FWD_ALGO_IMPLICIT_GEMM;
+  // DONE(student): extend with more options.
+  if (name == "gemm")
+    return CUDNN_CONVOLUTION_FWD_ALGO_GEMM;
+  if (name == "direct")
+    return CUDNN_CONVOLUTION_FWD_ALGO_DIRECT;
+  if (name == "fft_tiling")
+    return CUDNN_CONVOLUTION_FWD_ALGO_FFT_TILING;
+  if (name == "winograd")
+    return CUDNN_CONVOLUTION_FWD_ALGO_WINOGRAD;
+  if (name == "winograd_nonfused")
+    return CUDNN_CONVOLUTION_FWD_ALGO_WINOGRAD_NONFUSED;
+  throw std::invalid_argument("Unknown algo: " + name);
 }
 
 inline size_t query_conv_workspace(cudnnHandle_t handle,
@@ -342,6 +353,48 @@ inline void run_lenet_conv(cudnnHandle_t handle, const LenetShape &shape,
   cudnnAddTensor(handle, &bias_alpha, b_desc, d_bias, &alpha, y_desc, d_output);
 
   // Tanh activation in-place
+  cudnnActivationForward(handle, descs.activation, &alpha, y_desc, d_output,
+                         &beta, y_desc, d_output);
+}
+
+inline void run_lenet_conv_fused(cudnnHandle_t handle, const LenetShape &shape,
+                                 const LenetDescriptors &descs,
+                                 const float *d_input, const float *d_filter,
+                                 const float *d_bias, float *d_output,
+                                 void *d_workspace, size_t workspace_bytes,
+                                 const std::string &algo_name,
+                                 bool second_conv) {
+  (void)shape;
+  const float alpha1 = 1.0f, alpha2 = 0.0f;
+  cudnnConvolutionFwdAlgo_t algo = parse_algo(algo_name);
+
+  cudnnTensorDescriptor_t x_desc =
+      second_conv ? descs.pool1_out_desc : descs.input_desc;
+  cudnnFilterDescriptor_t w_desc =
+      second_conv ? descs.conv2_filter : descs.conv1_filter;
+  cudnnConvolutionDescriptor_t c_desc =
+      second_conv ? descs.conv2_desc : descs.conv1_desc;
+  cudnnTensorDescriptor_t y_desc =
+      second_conv ? descs.conv2_out_desc : descs.conv1_out_desc;
+  cudnnTensorDescriptor_t b_desc =
+      second_conv ? descs.conv2_bias_desc : descs.conv1_bias_desc;
+
+  // Fused conv + bias (with identity activation — tanh applied separately below
+  // because cudnnConvolutionBiasActivationForward only supports identity/ReLU).
+  cudnnActivationDescriptor_t identity_act;
+  cudnnCreateActivationDescriptor(&identity_act);
+  cudnnSetActivationDescriptor(identity_act, CUDNN_ACTIVATION_IDENTITY,
+                               CUDNN_PROPAGATE_NAN, 0.0);
+
+  cudnnConvolutionBiasActivationForward(
+      handle, &alpha1, x_desc, d_input, w_desc, d_filter, c_desc, algo,
+      d_workspace, workspace_bytes, &alpha2, y_desc, d_output, b_desc, d_bias,
+      identity_act, y_desc, d_output);
+
+  cudnnDestroyActivationDescriptor(identity_act);
+
+  // Apply tanh separately since the fused API can't do it
+  const float alpha = 1.0f, beta = 0.0f;
   cudnnActivationForward(handle, descs.activation, &alpha, y_desc, d_output,
                          &beta, y_desc, d_output);
 }

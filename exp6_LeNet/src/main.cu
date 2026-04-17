@@ -345,8 +345,38 @@ int main(int argc, char **argv) {
                "elapsed baseline");
   } else if (opt.impl == "fused") {
     check_cuda(cudaEventRecord(start), "record start fused");
-    /* TODO(student): same as baseline but fuse activation/bias where possible.
+
+    /* DONE(student): same as baseline but fuse activation/bias where possible.
      */
+
+    // Conv1 → pool1
+    run_lenet_conv_fused(cudnn, shape, descs, d_input,
+                         d_weights + shape.weight_offsets[0],
+                         d_biases + shape.bias_offsets[0], d_conv1_out,
+                         d_workspace, ws_bytes, opt.algo, false);
+    run_lenet_pool(cudnn, descs, d_conv1_out, d_pool1_out, false);
+    // Conv2 → pool2
+    run_lenet_conv_fused(cudnn, shape, descs, d_pool1_out,
+                         d_weights + shape.weight_offsets[1],
+                         d_biases + shape.bias_offsets[1], d_conv2_out,
+                         d_workspace, ws_bytes, opt.algo, true);
+    run_lenet_pool(cudnn, descs, d_conv2_out, d_pool2_out, true);
+    // Reshape pool2 output (N,16,5,5) -> (N,400) — no-op since same buffer
+    // layout
+    reshape_conv_to_fc(shape, d_pool2_out, d_pool2_out, 0);
+    // FC1: (N,400) -> (N,120) + tanh
+    run_fc_layer(cublas, shape, 0, d_pool2_out,
+                 d_weights + shape.weight_offsets[2],
+                 d_biases + shape.bias_offsets[2], d_fc1_out, 0);
+    // FC2: (N,120) -> (N,84) + tanh
+    run_fc_layer(cublas, shape, 1, d_fc1_out,
+                 d_weights + shape.weight_offsets[3],
+                 d_biases + shape.bias_offsets[3], d_fc2_out, 0);
+    // FC3: (N,84) -> (N,10), no activation
+    run_fc_layer(cublas, shape, 2, d_fc2_out,
+                 d_weights + shape.weight_offsets[4],
+                 d_biases + shape.bias_offsets[4], d_fc3_out, 0);
+
     check_cuda(cudaEventRecord(stop), "record stop fused");
     check_cuda(cudaEventSynchronize(stop), "sync stop fused");
     check_cuda(cudaEventElapsedTime(&elapsed_ms, start, stop), "elapsed fused");
