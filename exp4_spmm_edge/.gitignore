@@ -2,3 +2,4 @@ large
 venv
 spmm_opt
 spmm_baseline
+*.tar.gz

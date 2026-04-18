@@ -2,3 +2,4 @@ large
 venv
 .cache
 bin/
+*.tar.gz

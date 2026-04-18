@@ -413,7 +413,7 @@ int main(int argc, char **argv) {
       mean_diff += d;
     }
     mean_diff /= static_cast<float>(h_output.size());
-    std::cout << std::fixed << std::setprecision(10)
+    std::cout << std::fixed << std::setprecision(9)
               << "Verify: max_abs_diff=" << max_diff
               << " mean_abs_diff=" << mean_diff
               << (max_diff < 1e-3f ? "  PASS" : "  FAIL") << std::endl;
