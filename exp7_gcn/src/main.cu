@@ -2,6 +2,7 @@
 #include <cuda_runtime.h>
 #include <cusparse.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -77,27 +78,73 @@ int main(int argc, char **argv) {
   check_cuda(cudaEventCreate(&stop), "create stop event");
 
   DeviceGCNWorkspace workspace;
-  /* TODO(student): allocate device buffers for features, normalized adjacency,
+  /* DONE(student): allocate device buffers for features, normalized adjacency,
    * intermediate activations, weights. */
-  (void)workspace;
+  allocate_device_graph(graph, opt.hidden_dim, opt.layers, workspace);
 
-  // keep weights on host for dumping later
-  //  --dump is required; --verify may also need it
-  // if (!opt.dump_path.empty()) {
-  //     std::ofstream ofs("weights.bin", std::ios::binary);
-  //     if (ofs) {
-  //         ofs.write(reinterpret_cast<const char*>(h_weights.data()),
-  //         h_weights.size() * sizeof(float)); ofs.close(); std::cout <<
-  //         "Weights dumped to weights.bin" << std::endl;
-  //     } else {
-  //         std::cerr << "Error: Could not write to weights.bin" << std::endl;
-  //     }
-  // }
+  const auto w_dims = layer_weight_dims(graph.feature_dim, opt.hidden_dim,
+                                        graph.num_classes, opt.layers);
+  std::vector<float> h_weights;
+  init_weights_xavier(h_weights, w_dims, /*seed=*/42);
+  check_cuda(cudaMemcpy(workspace.d_weights, h_weights.data(),
+                        h_weights.size() * sizeof(float),
+                        cudaMemcpyHostToDevice),
+             "memcpy weights H2D");
+
+  std::cout << "Weights initialized:";
+  for (size_t i = 0; i < w_dims.size(); ++i) {
+    std::cout << " W" << i << "=" << w_dims[i].first << "x" << w_dims[i].second;
+  }
+  std::cout << " total=" << h_weights.size() << " floats" << std::endl;
+
+  if (!opt.dump_path.empty()) {
+    std::ofstream ofs("weights.bin", std::ios::binary);
+    if (!ofs) {
+      throw std::runtime_error("Could not open weights.bin for writing");
+    }
+    ofs.write(reinterpret_cast<const char *>(h_weights.data()),
+              static_cast<std::streamsize>(h_weights.size() * sizeof(float)));
+    ofs.close();
+    std::cout << "Weights dumped to weights.bin ("
+              << h_weights.size() * sizeof(float) << " bytes)" << std::endl;
+  }
+
+  std::vector<size_t> w_offsets(w_dims.size() + 1, 0);
+  for (size_t i = 0; i < w_dims.size(); ++i) {
+    w_offsets[i + 1] =
+        w_offsets[i] + static_cast<size_t>(w_dims[i].first) * w_dims[i].second;
+  }
+
   float elapsed_ms = 0.0f;
   if (opt.impl == "baseline") {
     check_cuda(cudaEventRecord(start), "record baseline start");
-    /* TODO(student): run forward pass using cusparseSpMM + cublasSgemm per
+    /* DONE(student): run forward pass using cusparseSpMM + cublasSgemm per
      * layer. */
+
+    const float *cur_input = workspace.d_features_in;
+    const int L = static_cast<int>(w_dims.size());
+    for (int l = 0; l < L; ++l) {
+      const int in_dim = w_dims[l].first;
+      const int out_dim = w_dims[l].second;
+      const bool is_last = (l == L - 1);
+      float *gemm_out = is_last ? workspace.d_logits : workspace.d_features_out;
+
+      run_sparse_dense_mm(cusparse, workspace,
+                          /*rows=*/graph.num_nodes,
+                          /*cols=*/in_dim,
+                          /*K=*/0, cur_input, workspace.d_temp);
+      run_dense_layer(cublas,
+                      /*M=*/graph.num_nodes,
+                      /*K=*/in_dim,
+                      /*N=*/out_dim, workspace.d_temp,
+                      workspace.d_weights + w_offsets[l], gemm_out);
+      if (!is_last) {
+        apply_activation(gemm_out, graph.num_nodes * out_dim,
+                         /*stream=*/0);
+      }
+      cur_input = gemm_out;
+    }
+
     check_cuda(cudaEventRecord(stop), "record baseline stop");
     check_cuda(cudaEventSynchronize(stop), "sync baseline stop");
     check_cuda(cudaEventElapsedTime(&elapsed_ms, start, stop),
@@ -114,7 +161,19 @@ int main(int argc, char **argv) {
   }
 
   std::vector<float> h_logits(graph.num_nodes * graph.num_classes, 0.0f);
-  /* TODO(student): copy device logits back into h_logits. */
+  /* DONE(student): copy device logits back into h_logits. */
+  check_cuda(cudaMemcpy(h_logits.data(), workspace.d_logits,
+                        h_logits.size() * sizeof(float),
+                        cudaMemcpyDeviceToHost),
+             "D2H d_logits -> h_logits");
+
+  // // TEMP: Remove
+  // // Eyeball sanity: first row of logits. Values should be finite and of
+  // // modest magnitude (typically ~1e-3 to ~1e-1 given Xavier init + ReLU).
+  // std::cout << "Logits row 0:";
+  // for (int c = 0; c < graph.num_classes; ++c)
+  //   std::cout << " " << h_logits[c];
+  // std::cout << std::endl;
 
   if (!opt.dump_path.empty()) {
     std::ofstream ofs(opt.dump_path, std::ios::binary);
@@ -140,7 +199,14 @@ int main(int argc, char **argv) {
     std::cout << "Forward pass executed (timing TODO incomplete)." << std::endl;
   }
 
-  /* TODO(student): free device buffers, destroy cuBLAS/cuSPARSE handles,
+  /* DONE(student): free device buffers, destroy cuBLAS/cuSPARSE handles,
    * destroy events. */
+
+  destroy_device_graph(workspace);
+  check_cuda(cudaEventDestroy(start), "destroy start event");
+  check_cuda(cudaEventDestroy(stop), "destroy stop event");
+  check_cublas(cublasDestroy(cublas), "cublasDestroy");
+  check_cusparse(cusparseDestroy(cusparse), "cusparseDestroy");
+
   return 0;
 }
