@@ -519,6 +519,67 @@ inline void apply_activation(float *d_tensor, int elements,
   relu_kernel<<<grid, kBlock, 0, stream>>>(d_tensor, elements);
 }
 
+constexpr int GEMM_RELU_TILE = 16;
+
+__global__ inline void gemm_relu_kernel(int M, int K, int N,
+                                        const float *__restrict__ A,
+                                        const float *__restrict__ B,
+                                        float *__restrict__ C) {
+  __shared__ float As[GEMM_RELU_TILE][GEMM_RELU_TILE];
+  __shared__ float Bs[GEMM_RELU_TILE][GEMM_RELU_TILE];
+
+  const int row = blockIdx.y * GEMM_RELU_TILE + threadIdx.y; // row in C
+  const int col = blockIdx.x * GEMM_RELU_TILE + threadIdx.x; // col in C
+
+  float acc = 0.0f;
+
+  // Loop over K in tiles. Each iteration cooperatively loads a TILE x TILE
+  // block of A and a TILE x TILE block of B into shared memory, then does
+  // TILE dot-product accumulations.
+  const int num_k_tiles = (K + GEMM_RELU_TILE - 1) / GEMM_RELU_TILE;
+  for (int kt = 0; kt < num_k_tiles; ++kt) {
+    // A tile row to load: (row, kt*TILE + threadIdx.x).
+    const int a_col = kt * GEMM_RELU_TILE + threadIdx.x;
+    As[threadIdx.y][threadIdx.x] =
+        (row < M && a_col < K) ? A[row * K + a_col] : 0.0f;
+
+    // B tile: (kt*TILE + threadIdx.y, col).
+    const int b_row = kt * GEMM_RELU_TILE + threadIdx.y;
+    Bs[threadIdx.y][threadIdx.x] =
+        (b_row < K && col < N) ? B[b_row * N + col] : 0.0f;
+
+    __syncthreads();
+
+// Accumulate TILE partial products from shared memory.
+#pragma unroll
+    for (int k = 0; k < GEMM_RELU_TILE; ++k) {
+      acc += As[threadIdx.y][k] * Bs[k][threadIdx.x];
+    }
+
+    __syncthreads();
+  }
+
+  // Store with ReLU epilogue. This is the fusion: the pre-ReLU value of
+  // acc never touches DRAM.
+  if (row < M && col < N) {
+    C[row * N + col] = acc > 0.0f ? acc : 0.0f;
+  }
+}
+
+// Row-major GEMM with a fused ReLU epilogue.
+// Computes C(M x N) = max(A(M x K) * B(K x N), 0) in one kernel launch.
+inline void run_dense_layer_relu(int M, int K, int N, const float *d_input,
+                                 const float *d_weight, float *d_output,
+                                 cudaStream_t stream = 0) {
+  if (M <= 0 || N <= 0 || K <= 0)
+    return;
+  const dim3 block(GEMM_RELU_TILE, GEMM_RELU_TILE);
+  const dim3 grid((N + GEMM_RELU_TILE - 1) / GEMM_RELU_TILE,
+                  (M + GEMM_RELU_TILE - 1) / GEMM_RELU_TILE);
+  gemm_relu_kernel<<<grid, block, 0, stream>>>(M, K, N, d_input, d_weight,
+                                               d_output);
+}
+
 inline void apply_dropout(float *d_tensor, int elements, float drop_prob,
                           cudaStream_t stream) {
   /* TODO(student): optional – implement dropout. */

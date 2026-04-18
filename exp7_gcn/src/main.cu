@@ -163,38 +163,24 @@ int main(int argc, char **argv) {
       float *final_out =
           is_last ? workspace.d_logits : workspace.d_features_out;
 
-      if (in_dim > out_dim) {
-        // Reordered: GEMM first, then SpMM.
-        // GEMM: cur_input (N x in_dim) * W_l (in_dim x out_dim) -> d_temp (N x
-        // out_dim)
-        run_dense_layer(cublas,
-                        /*M=*/graph.num_nodes,
-                        /*K=*/in_dim,
-                        /*N=*/out_dim, cur_input,
-                        workspace.d_weights + w_offsets[l], workspace.d_temp);
-        // SpMM: d_temp (N x out_dim) -> final_out (N x out_dim)
-        run_sparse_dense_mm(cusparse, workspace,
-                            /*rows=*/graph.num_nodes,
-                            /*cols=*/out_dim,
-                            /*K=*/0, workspace.d_temp, final_out);
-      } else {
-        // Baseline ordering (SpMM first) when in_dim <= out_dim.
-        // Doesn't happen on Cora/Citeseer with hidden<=256, but keeps
-        // the code correct for deeper/wider architectures.
-        run_sparse_dense_mm(cusparse, workspace,
-                            /*rows=*/graph.num_nodes,
-                            /*cols=*/in_dim,
-                            /*K=*/0, cur_input, workspace.d_temp);
+      run_sparse_dense_mm(cusparse, workspace,
+                          /*rows=*/graph.num_nodes,
+                          /*cols=*/in_dim,
+                          /*K=*/0, cur_input, workspace.d_temp);
+      if (is_last) {
+        // No activation on the last layer; use cuBLAS for the tuned path.
         run_dense_layer(cublas,
                         /*M=*/graph.num_nodes,
                         /*K=*/in_dim,
                         /*N=*/out_dim, workspace.d_temp,
                         workspace.d_weights + w_offsets[l], final_out);
-      }
-
-      if (!is_last) {
-        apply_activation(final_out, graph.num_nodes * out_dim,
-                         /*stream=*/0);
+      } else {
+        // Fused GEMM + ReLU in a single kernel.
+        run_dense_layer_relu(/*M=*/graph.num_nodes,
+                             /*K=*/in_dim,
+                             /*N=*/out_dim, workspace.d_temp,
+                             workspace.d_weights + w_offsets[l], final_out,
+                             /*stream=*/0);
       }
       cur_input = final_out;
     }
