@@ -13,11 +13,22 @@ except AttributeError:
 else:
     ssl._create_default_https_context = _create_unverified_https_context
 
-def download_and_process_cora(data_dir):
-    url = "https://linqs-data.soe.ucsc.edu/public/lbc/cora.tgz"
-    tgz_path = os.path.join(data_dir, "cora.tgz")
+def download_and_process_cora(data_dir, dataset):
+    sources = {
+        "citeseer": {
+            "url": "https://linqs-data.soe.ucsc.edu/public/lbc/citeseer.tgz",
+            "folder": "citeseer",
+        },
+        "cora": {
+            "url": "https://linqs-data.soe.ucsc.edu/public/lbc/cora.tgz",
+            "folder": "cora",
+        },
+    }
+    url = sources[dataset]["url"]
+    folder = sources[dataset]["folder"]
+    tgz_path = os.path.join(data_dir, f"{dataset}.tgz")
 
-    print(f"Downloading raw Cora from {url}...")
+    print(f"Downloading raw {dataset} from {url}...")
     if not os.path.exists(tgz_path):
         urllib.request.urlretrieve(url, tgz_path)
 
@@ -26,8 +37,8 @@ def download_and_process_cora(data_dir):
         tar.extractall(path=data_dir)
 
     # paths to raw files
-    content_path = os.path.join(data_dir, "cora", "cora.content")
-    cites_path = os.path.join(data_dir, "cora", "cora.cites")
+    content_path = os.path.join(data_dir, folder, f"{dataset}.content")
+    cites_path = os.path.join(data_dir, folder, f"{dataset}.cites")
 
     print("Parsing raw text files...")
 
@@ -84,7 +95,7 @@ def download_and_process_cora(data_dir):
 
     print(f"Graph Info: {num_nodes} nodes, {nnz} edges, {features.shape[1]} features.")
 
-    name = "cora"
+    name = dataset
 
     # ==========================================
     # Save two sets of data (C++ version and Python verification version)
@@ -124,7 +135,8 @@ def download_and_process_cora(data_dir):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--out', type=str, default='data')
+    parser.add_argument('--dataset', type=str, default='cora', choices=['cora', 'citeseer'])
     args = parser.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
-    download_and_process_cora(args.out)
+    download_and_process_cora(args.out, args.dataset)
