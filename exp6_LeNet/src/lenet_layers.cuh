@@ -1,5 +1,6 @@
 #pragma once
 
+#include "cudnn_graph.h"
 #include "cudnn_ops.h"
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
@@ -382,13 +383,18 @@ inline void run_lenet_conv_fused(cudnnHandle_t handle, const LenetShape &shape,
   // Single-kernel fused: y = tanh(alpha1 * conv(x, w) + alpha2 * z + bias)
   // alpha2=0 means z is ignored; pass z = d_output as a valid but unused
   // pointer.
-  cudnnConvolutionBiasActivationForward(
+  cudnnStatus_t status = cudnnConvolutionBiasActivationForward(
       handle, &alpha1, x_desc, d_input, w_desc, d_filter, c_desc, algo,
       d_workspace, workspace_bytes, &alpha2, y_desc,
       d_output, // zDesc, z (ignored since alpha2=0)
       b_desc, d_bias,
       descs.activation, // existing tanh descriptor — reused
       y_desc, d_output);
+
+  if (status == CUDNN_STATUS_NOT_SUPPORTED) {
+    // Fall back: fused conv+bias with identity, then separate tanh
+    throw std::invalid_argument("Does not support activation used");
+  }
 }
 
 inline void run_lenet_pool(cudnnHandle_t handle, const LenetDescriptors &descs,
