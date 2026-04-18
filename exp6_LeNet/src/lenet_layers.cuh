@@ -390,11 +390,6 @@ inline void run_lenet_conv_fused(cudnnHandle_t handle, const LenetShape &shape,
       b_desc, d_bias,
       descs.activation, // existing tanh descriptor — reused
       y_desc, d_output);
-
-  if (status == CUDNN_STATUS_NOT_SUPPORTED) {
-    // Fall back: fused conv+bias with identity, then separate tanh
-    throw std::invalid_argument("Does not support activation used");
-  }
 }
 
 inline void run_lenet_pool(cudnnHandle_t handle, const LenetDescriptors &descs,
